@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# luabot — Lua botni ishga tushiradi va yiqilsa avtomatik qayta yoqadi.
+#
+#   luabot mybot.lua              # avto-restart bilan
+#   luabot --once mybot.lua       # bir marta (debug uchun)
+#   BOT_TOKEN=123:ABC luabot mybot.lua
+#
+# Loglar: ~/.luabot/logs/<bot nomi>.log (LUABOT_LOG_DIR bilan o'zgartiriladi)
+set -u
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+ONCE=0
+if [ "${1:-}" = "--once" ]; then ONCE=1; shift; fi
+if [ $# -lt 1 ]; then
+  echo "Foydalanish: luabot [--once] <bot.lua> [argumentlar...]" >&2
+  exit 2
+fi
+SCRIPT="$1"; shift
+[ -f "$SCRIPT" ] || { echo "Fayl topilmadi: $SCRIPT" >&2; exit 2; }
+
+# Lua interpretatorini topish (Termux: lua54 paketi `lua5.4` beradi)
+LUA="${LUABOT_LUA:-}"
+if [ -z "$LUA" ]; then
+  for c in lua5.4 lua54 lua lua5.3 luajit lua5.1; do
+    if command -v "$c" >/dev/null 2>&1; then LUA="$c"; break; fi
+  done
+fi
+[ -n "$LUA" ] || { echo "Lua topilmadi. Termux: pkg install lua54" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "curl topilmadi. Termux: pkg install curl" >&2; exit 1; }
+
+export LUA_PATH="$ROOT/?.lua;$ROOT/?/init.lua;./?.lua;./?/init.lua;${LUA_PATH:-;}"
+
+if [ "$ONCE" = 1 ]; then exec "$LUA" "$SCRIPT" "$@"; fi
+
+NAME="$(basename "$SCRIPT" .lua)"
+LOG_DIR="${LUABOT_LOG_DIR:-$HOME/.luabot/logs}"
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/$NAME.log"
+
+# Android telefon uxlab qolmasligi uchun (Termux:API kerak emas, Termux o'zida bor)
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+
+trap 'echo "[luabot] to'"'"'xtatildi"; exit 0' INT TERM
+DELAY=1
+while true; do
+  START=$(date +%s)
+  echo "[luabot] $(date '+%F %T') $NAME ishga tushmoqda ($LUA)" | tee -a "$LOG"
+  "$LUA" "$SCRIPT" "$@" 2>&1 | tee -a "$LOG"
+  CODE=${PIPESTATUS[0]}
+  echo "[luabot] $(date '+%F %T') $NAME to'xtadi (kod $CODE), ${DELAY}s dan keyin qayta" | tee -a "$LOG"
+  # 60s dan ko'p ishlagan bo'lsa kutishni qayta 1s ga tushiramiz
+  if [ $(( $(date +%s) - START )) -gt 60 ]; then DELAY=1; fi
+  sleep "$DELAY"
+  DELAY=$(( DELAY * 2 > 60 ? 60 : DELAY * 2 ))
+done
